@@ -9,6 +9,7 @@ import traceback
 import uuid
 import zipfile
 from collections import defaultdict, deque
+from datetime import datetime
 from io import BytesIO
 from subprocess import PIPE, Popen
 from typing import ClassVar
@@ -394,10 +395,14 @@ class Cancel(WsResource):
         if self.root.poller.queues[project].remove(lambda message: message["_job"] == job):
             prevstate = "pending"
 
-        for process in self.root.launcher.processes.values():
+        for key, process in list(self.root.launcher.processes.items()):
             if process.project == project and process.job == job:
                 process.transport.signalProcess(signal)
                 prevstate = "running"
+                print(f"your key : {key}")
+                self.root.launcher.processes.pop(key)
+                process.end_time = datetime.now()
+                self.root.launcher.finished.add(process)
 
         return {"prevstate": prevstate}
 
