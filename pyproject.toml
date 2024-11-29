@@ -1,0 +1,109 @@
+[build-system]
+requires = ["setuptools>=61.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scrapyd-general"
+version = "1.0.0"
+authors = [{name = "Scrapy developers", email = "bagas@fossy.my.id"}]
+description = "A service for running Scrapy spiders, with an HTTP API"
+readme = "README.rst"
+license = {text = "BSD"}
+urls = {Homepage = "https://github.com/scrapy/scrapyd"}
+classifiers = [
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Environment :: No Input/Output (Daemon)",
+    "Topic :: Internet :: WWW/HTTP",
+]
+dependencies = [
+  "packaging",
+  "pywin32;platform_system=='Windows'",
+  "scrapy>=2.0.0",
+  "setuptools",
+  "twisted>=17.9",
+  "w3lib",
+  "zope.interface",
+]
+
+[project.optional-dependencies]
+test = [
+  "coveralls",
+  "py-html-checker",
+  "pytest",
+  "pytest-cov",
+  "pytest-twisted",
+  "requests",
+  "twisted>=19.7",  # twisted.logger.capturedLogs
+]
+docs = [
+    "furo",
+    "sphinx",
+    "sphinx-autobuild",
+    "sphinxcontrib-zopeext",
+]
+
+[project.scripts]
+scrapyd = "scrapyd.__main__:main"
+
+[tool.setuptools]
+packages = ["scrapyd"]
+zip-safe = false  # The scrapyd.__main__ module requires the txapp.py file to be decompressed. #49
+
+[tool.ruff]
+line-length = 119
+target-version = "py38"
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+  "ANN", "COM", "EM",
+  # https://docs.astral.sh/ruff/formatter/#conflicting-lint-rules
+  "W191", "E501", "D206", "Q000", "Q001", "Q002", "Q003", "ISC001",
+  "D203", "D212",  # ignore incompatible rules
+  "D200",  # documentation preferences
+  "C901", "PLR0912",  # complexity preferences
+
+  # Project-specific
+  "D",
+  "PTH",  # Scrapyd hasn't adopted pathlib
+  "ARG002",  # Unused method argument (txrequest argument isn't always used)
+  "N802",  # Function name should be lowercase (Twisted uses method names like render_GET)
+  "N803",  # Argument name should be lowercase (Twisted uses argument names like avatarId)
+  "N815",  # Variable in class scope should not be mixedCase (Twisted uses class attributes like requestAvatarId)
+  "PLR0913",  # Too many arguments to function call
+  "S603",  # `subprocess` call: check for execution of untrusted input (informative)
+
+  # sqlite3 doesn't have functions like psycopg2.sql.Identifier and psycopg2.sql.SQL.format.
+  "S608",  # Possible SQL injection vector through string-based query construction
+
+  # Scrapyd uses naive datetimes.
+  "DTZ001",  # `datetime.datetime()` called without a `tzinfo` argument"
+  "DTZ005",  # `datetime.datetime.now()` called without a `tz` argument
+  "DTZ006",  # `datetime.datetime.fromtimestamp()` called without a `tz` argument
+  "DTZ007",  # Naive datetime constructed using `datetime.datetime.strptime()` without %z
+]
+
+[tool.ruff.lint.flake8-builtins]
+builtins-ignorelist = ["copyright"]
+
+[tool.ruff.lint.per-file-ignores]
+"docs/conf.py" = ["INP001"]  # no __init__.py file
+"scrapyd/__main__.py" = ["T201"]  #  `print` found
+"scrapyd/interfaces.py" = ["N805"]  # First argument of a method should be named `self`
+"{tests,integration_tests}/*" = [
+  "D",  # docstring
+  "S101",  # assert
+  "S106",  # password
+  "S113",  # requests timeout
+  "PLR2004",  # magic value
+  "ARG001", "ARG002", "ARG005",  # mocks
+  "PT009", "PT027",  # Scrapyd mixes unittest with pytest
+]

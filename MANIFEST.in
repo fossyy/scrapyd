@@ -1,0 +1,14 @@
+include LICENSE
+include scrapyd/default_scrapyd.conf
+recursive-include docs *.py
+recursive-include docs *.rst
+recursive-include docs *.txt
+recursive-include docs Makefile
+recursive-include scrapyd *.py
+recursive-include tests *.cfg
+recursive-include tests *.egg
+recursive-include tests *.py
+recursive-include integration_tests *.py
+exclude .git-blame-ignore-revs
+exclude .pre-commit-config.yaml
+exclude .readthedocs.yaml
