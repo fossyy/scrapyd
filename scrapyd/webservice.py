@@ -3,6 +3,7 @@ from __future__ import annotations
 import functools
 import json
 import os
+import platform
 import subprocess
 import sys
 import traceback
@@ -240,32 +241,79 @@ class SpiderStatus(WsResource):
             if process.project == project and process.job == jobid:
                 spider = process
 
-        try:
-            with open(f'/proc/{spider.pid}/stat', 'r') as f:
-                stats = f.read().split()
-
-            utime = int(stats[13])
-            stime = int(stats[14])
-
-            with open(f'/proc/{spider.pid}/status', 'r') as f:
-                memory_info = f.read()
-                for line in memory_info.splitlines():
-                    if line.startswith("VmRSS"):
-                        memory_usage_kb = int(line.split()[1])
-                        break
-
-            memory_usage_mb = memory_usage_kb / 1024
-
-            total_time = utime + stime
-            cpu_usage = total_time / (psutil.cpu_count() * 100)
+        if not spider:
             return {
                 "code": http.NOT_FOUND,
+                "usage": {
+                    "cpu": 0,
+                    "memory": 0,
+                },
+                "pid": 0,
+                "message": "Spider not found",
+            }
+
+        try:
+            pid = spider.pid
+
+            if platform.system() == "Linux":
+                with open(f'/proc/{pid}/stat', 'r') as f:
+                    stats = f.read().split()
+
+                utime = int(stats[13])
+                stime = int(stats[14])
+
+                with open(f'/proc/{pid}/status', 'r') as f:
+                    memory_info = f.read()
+                    for line in memory_info.splitlines():
+                        if line.startswith("VmRSS"):
+                            memory_usage_kb = int(line.split()[1])
+                            break
+
+                memory_usage_mb = memory_usage_kb / 1024
+                total_time = utime + stime
+                cpu_usage = total_time / (psutil.cpu_count() * 100)
+
+            elif platform.system() == "Windows":
+                process = psutil.Process(pid)
+
+                cpu_times = process.cpu_times()
+                total_time = cpu_times.user + cpu_times.system
+
+                memory_info = process.memory_info()
+                memory_usage_mb = memory_info.rss / (1024 * 1024)
+
+                cpu_usage = total_time / psutil.cpu_count()
+
+            else:
+                return {
+                    "code": http.NOT_IMPLEMENTED,
+                    "usage": {
+                        "cpu": 0,
+                        "memory": 0,
+                    },
+                    "pid": pid,
+                    "message": f"Unsupported platform: {platform.system()}",
+                }
+
+            return {
+                "code": http.OK,
                 "usage": {
                     "cpu": cpu_usage,
                     "memory": memory_usage_mb,
                 },
-                "pid": spider.pid,
-                "message": "Not found",
+                "pid": pid,
+                "message": "Success",
+            }
+
+        except psutil.NoSuchProcess:
+            return {
+                "code": http.NOT_FOUND,
+                "usage": {
+                    "cpu": 0,
+                    "memory": 0,
+                },
+                "pid": 0,
+                "message": f"Process with pid {pid} not found",
             }
         except Exception as e:
             return {
@@ -275,7 +323,7 @@ class SpiderStatus(WsResource):
                     "memory": 0,
                 },
                 "pid": 0,
-                "message": f"Error : {e}",
+                "message": f"Error: {e}",
             }
 
 
@@ -286,13 +334,47 @@ class SpiderLogs(JustContentResource):
     def render_GET(self, txrequest, project, jobid, maxlen):
         if maxlen is None:
             maxlen = "40"
-        f = subprocess.Popen(['tail', '-n', maxlen, f'logs/{project}/{jobid}/log.log'],stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            maxlen = int(maxlen)
+        except ValueError:
+            maxlen = 40
+
+        log_path = f'logs/{project}/{jobid}/log.log'
 
         output_lines = []
-        for line in f.stdout:
-            output_lines.append(line.decode().strip())
 
-        return list(output_lines)
+        try:
+            if platform.system() == "Linux":
+                f = subprocess.Popen(['tail', '-n', str(maxlen), log_path],
+                                     stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE)
+                for line in f.stdout:
+                    output_lines.append(line.decode().strip())
+
+            elif platform.system() == "Windows":
+                with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    lines = f.readlines()
+                    output_lines = lines[-maxlen:]  # Fetch last 'maxlen' lines
+                    output_lines = [line.strip() for line in output_lines]
+
+            else:
+                return {
+                    "code": http.NOT_IMPLEMENTED,
+                    "message": f"Unsupported platform: {platform.system()}",
+                }
+
+            return list(output_lines)
+
+        except FileNotFoundError:
+            return {
+                "code": http.NOT_FOUND,
+                "message": f"Log file not found: {log_path}",
+            }
+        except Exception as e:
+            return {
+                "code": http.INTERNAL_SERVER_ERROR,
+                "message": f"Error reading log file: {str(e)}",
+            }
 
 class SpiderResults(resource.Resource):
     def __init__(self, root):

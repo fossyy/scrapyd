@@ -1,0 +1,9 @@
+Dockerfile
+__pycache__
+scrapyd_general.egg-info
+logs
+results
+dbs
+.idea
+eggs
+.env
