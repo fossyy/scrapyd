@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import base64
 import functools
+import gzip
+import io
 import json
+import mimetypes
 import os
 import platform
+import re
+import shutil
 import subprocess
 import sys
 import traceback
@@ -129,7 +135,7 @@ class WsResource(resource.Resource):
     def render(self, txrequest):
         try:
             data = super().render(txrequest)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             log.failure("")
 
             if isinstance(e, error.Error):
@@ -144,14 +150,13 @@ class WsResource(resource.Resource):
             if data is not None:
                 data["status"] = "ok"
 
-        if data is None:  # render_OPTIONS
+        if data is None:
             content = b""
         else:
             data["node_name"] = self.root.node_name
             content = self.json_encoder.encode(data).encode() + b"\n"
             txrequest.setHeader("Content-Type", "application/json")
 
-        # https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS#preflighted_requests
         txrequest.setHeader("Access-Control-Allow-Origin", "*")
         txrequest.setHeader("Access-Control-Allow-Methods", self.methods)
         txrequest.setHeader("Access-Control-Allow-Headers", "X-Requested-With")
@@ -170,6 +175,69 @@ class WsResource(resource.Resource):
         if hasattr(self, "render_POST"):
             methods.append("POST")
         return ", ".join(methods)
+
+class RawContentResource(resource.Resource):
+    def __init__(self, root):
+        super().__init__()
+        self.root = root
+
+    def render(self, txrequest):
+        # try:
+        data = super().render(txrequest)
+        # except Exception as e:
+        #     log.failure("")
+        #
+        #     if isinstance(e, http.Error):
+        #         txrequest.setResponseCode(int(e.status))
+        #
+        #     if self.root.debug:
+        #         return traceback.format_exc().encode()
+        #
+        #     message = e.message.decode() if isinstance(e, http.Error) else f"{type(e).__name__}: {e}"
+        #     txrequest.setResponseCode(http.INTERNAL_SERVER_ERROR)
+        #     return message.encode()
+
+        # txrequest.setHeader("Access-Control-Allow-Origin", "*")
+        # txrequest.setHeader("Access-Control-Allow-Methods", self.methods)
+        # txrequest.setHeader("Access-Control-Allow-Headers", "X-Requested-With")
+        return data
+
+    # def render_GET(self, txrequest):
+    #     # Ensure the request has a valid file path
+    #     file_path = txrequest.args.get(b"path", [b""])[0].decode()
+    #     full_path = os.path.join(self.root, file_path)
+    #
+    #     if not os.path.exists(full_path) or not os.path.isfile(full_path):
+    #         txrequest.setResponseCode(http.NOT_FOUND)
+    #         return b"File not found"
+    #
+    #     try:
+    #         with open(full_path, "rb") as file:
+    #             file_data = file.read()
+    #
+    #         mime_type, _ = mimetypes.guess_type(full_path)
+    #         mime_type = mime_type or "application/octet-stream"
+    #
+    #         txrequest.setHeader("Content-Type", mime_type)
+    #         txrequest.setHeader("Content-Length", str(len(file_data)))
+    #
+    #         return file_data
+    #
+    #     except Exception as e:
+    #         log.failure(f"Failed to read file: {e}")
+    #         txrequest.setResponseCode(http.INTERNAL_SERVER_ERROR)
+    #         return b"Error reading file"
+    #
+    # def render_OPTIONS(self, txrequest):
+    #     txrequest.setHeader("Allow", self.methods)
+    #     txrequest.setResponseCode(http.NO_CONTENT)
+    #
+    # @functools.cached_property
+    # def methods(self):
+    #     methods = ["OPTIONS", "HEAD"]
+    #     if hasattr(self, "render_GET"):
+    #         methods.append("GET")
+    #     return ", ".join(methods)
 
 class JustContentResource(resource.Resource):
     json_encoder = json.JSONEncoder()
@@ -325,6 +393,125 @@ class SpiderStatus(WsResource):
                 "pid": 0,
                 "message": f"Error: {e}",
             }
+
+class SpiderStorage(JustContentResource):
+    def render_GET(self, txrequest):
+        def get_logs_structure(path):
+            logs_structure = []
+            for project_name in os.listdir(path):
+                project_path = os.path.join(path, project_name)
+                if os.path.isdir(project_path):
+                    jobs = [
+                        job_id for job_id in os.listdir(project_path)
+                        if os.path.isdir(os.path.join(project_path, job_id)) and job_id != "general_engine"
+                    ]
+                    logs_structure.append({
+                        "project": project_name,
+                        "jobs": jobs
+                    })
+            return logs_structure
+
+        def get_results_structure(path):
+            results_structure = []
+            for project_name in os.listdir(path):
+                project_path = os.path.join(path, project_name)
+                if os.path.isdir(project_path):
+                    json_files = [
+                        file for file in os.listdir(project_path)
+                        if file.endswith(".json") and os.path.isfile(os.path.join(project_path, file))
+                    ]
+                    results_structure.append({
+                        "project": project_name,
+                        "data": json_files
+                    })
+            return results_structure
+
+        logs_path = "logs/"
+        results_path = "results/"
+
+        if not os.path.exists(logs_path):
+            return {"error": "Logs directory does not exist."}
+        if not os.path.exists(results_path):
+            return {"error": "Results directory does not exist."}
+
+        logs_structure = get_logs_structure(logs_path)
+        results_structure = get_results_structure(results_path)
+
+        return {
+            "test": "test",
+            "logs": logs_structure,
+            "results": results_structure,
+        }
+
+class SpiderDownloadLog(RawContentResource):
+    @param("project")
+    @param("job_id")
+    def render_GET(self, txrequest, project, job_id):
+        directory_path = f"logs/{project}/{job_id}"
+
+        if not os.path.exists(directory_path) or not os.path.isdir(directory_path):
+            txrequest.setResponseCode(http.NOT_FOUND)
+            return b"Directory not found"
+
+        try:
+            combined_logs = ""
+            for root, dirs, files in os.walk(directory_path):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        combined_logs += f.read() + "\n"
+
+            combined_logs = combined_logs.strip()
+
+            txrequest.setHeader("Content-Type", "text/plain")
+            txrequest.setHeader("Content-Disposition", f'attachment; filename="combined_{job_id}.log"')
+            txrequest.setHeader("Content-Length", str(len(combined_logs)))
+
+            return combined_logs.encode("utf-8")
+        except Exception as e:
+            log.err(f"Failed to read logs: {e}")
+            txrequest.setResponseCode(http.INTERNAL_SERVER_ERROR)
+            return b"Error reading logs"
+
+class SpiderDownloadResult(RawContentResource):
+    @param("project")
+    @param("job_id")
+    def render_GET(self, txrequest, project, job_id):
+        directory_path = f"results/{project}/{job_id}"
+
+        if not os.path.exists(directory_path) or not os.path.isfile(directory_path):
+            txrequest.setResponseCode(http.NOT_FOUND)
+            return b"File not found"
+
+        base_directory = "results"
+
+        directory_path = os.path.join(base_directory, project, job_id)
+
+        absolute_path = os.path.abspath(directory_path)
+
+        if not absolute_path.startswith(os.path.abspath(base_directory)):
+            txrequest.setResponseCode(http.FORBIDDEN)
+            # Biar ambigu bang
+            return b"File not found"
+
+        if not os.path.exists(absolute_path) or not os.path.isfile(absolute_path):
+            txrequest.setResponseCode(http.NOT_FOUND)
+            return b"File not found"
+
+        try:
+
+            with open(directory_path, "rb") as f:
+                content = f.read()
+
+            txrequest.setHeader("Content-Type", "application/json")
+            txrequest.setHeader("Content-Disposition", f'attachment; filename="{job_id}"')
+            txrequest.setHeader("Content-Length", str(len(job_id)))
+
+            return content
+        except Exception as e:
+            log.failure(f"Failed to send file: {e}")
+            txrequest.setResponseCode(http.INTERNAL_SERVER_ERROR)
+            return b"Error sending results"
 
 
 class SpiderLogs(JustContentResource):
